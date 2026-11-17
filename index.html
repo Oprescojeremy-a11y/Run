@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#14251e"><title>RunLoop — parcours running</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+:root{--bg:#f3f5f1;--ink:#17251e;--green:#1d6b45;--muted:#69756e;--line:#dce4dc}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);font:15px system-ui,-apple-system,Segoe UI,sans-serif;color:var(--ink)}
+header{background:#14251e;color:white;padding:22px 18px 24px}header .tag{font-size:11px;letter-spacing:2px;color:#9fceb0;font-weight:700}h1{font-size:29px;margin:5px 0 3px}header p{margin:0;color:#c7d6cc;font-size:14px}
+main{max-width:760px;margin:auto;padding:16px}.panel{background:white;border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:14px;box-shadow:0 4px 16px #193a2410}
+.label{font-size:12px;color:var(--muted);font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px}
+.distances{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.distance{border:1.5px solid var(--line);background:#fff;border-radius:13px;padding:13px 5px;font-size:19px;font-weight:800;color:var(--ink)}.distance small{display:block;font-size:11px;font-weight:500;color:var(--muted)}.distance.active{border-color:var(--green);background:#eaf4ed;color:var(--green)}
+button.primary{width:100%;border:0;border-radius:13px;background:var(--green);color:white;padding:15px;font-weight:750;font-size:15px;margin-top:13px}button:disabled{opacity:.55}
+#map{height:350px;border-radius:15px;overflow:hidden;background:#e8eee8}.status{font-size:13px;color:var(--muted);line-height:1.5;margin-top:10px}.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}.stat{background:#f3f6f2;border-radius:12px;padding:11px}.stat b{display:block;font-size:20px}.stat span{font-size:11px;color:var(--muted)}
+.actions{display:flex;gap:9px;margin-top:12px}.actions button{flex:1;border:1px solid var(--line);background:white;border-radius:11px;padding:12px;font-weight:650;color:var(--ink)}
+.note{font-size:12px;color:var(--muted);line-height:1.5}.pill{display:inline-block;background:#eaf4ed;color:#1d6b45;border-radius:20px;padding:5px 9px;font-size:11px;font-weight:700}
+@media(max-width:420px){#map{height:320px}.stats{gap:5px}.stat{padding:9px}.stat b{font-size:17px}}
+</style></head>
+<body>
+<header><div class="tag">RUNLOOP · RUNNING GPS</div><h1>Ta prochaine boucle.</h1><p>Des parcours autour de toi, à la distance choisie.</p></header>
+<main>
+<section class="panel">
+ <div class="label">1 · Choisis ta distance</div>
+ <div class="distances">
+  <button class="distance active" data-km="5">5 km<small>Sortie courte</small></button>
+  <button class="distance" data-km="10">10 km<small>Endurance</small></button>
+  <button class="distance" data-km="15">15 km<small>Longue sortie</small></button>
+ </div>
+ <button class="primary" id="find">◎ Trouver une boucle autour de moi</button>
+ <div class="status" id="status">Active la localisation de ton téléphone pour rechercher des itinéraires. La carte se centrera sur ta position GPS.</div>
+</section>
+<section class="panel">
+ <div class="label">2 · Ton parcours</div><div id="map"></div>
+ <div class="stats"><div class="stat"><b id="distance">—</b><span>Distance réelle</span></div><div class="stat"><b id="time">—</b><span>Temps estimé*</span></div><div class="stat"><b id="gain">—</b><span>Dénivelé**</span></div></div>
+ <div class="actions"><button id="nav" disabled>↗ Ouvrir l’itinéraire</button><button id="again" disabled>↻ Autre boucle</button></div>
+ <p class="note">* Estimation basée sur 6 min/km. ** Le dénivelé n’est pas encore calculé. Les parcours sont calculés sur le réseau routier/pistes disponible via le service de routage ; vérifie toujours le tracé avant de partir.</p>
+</section>
+<section class="panel">
+ <span class="pill">Comment ça marche</span>
+ <p class="note">RunLoop utilise la position GPS de ton navigateur puis recherche plusieurs boucles en s’appuyant sur le réseau OpenStreetMap et le moteur de calcul un moteur de routage piéton OpenStreetMap. La distance affichée est celle du tracé calculé, pas un cercle théorique.</p>
+ <p class="note">La localisation est demandée uniquement lorsque tu appuies sur le bouton. Pour que le GPS fonctionne sur iPhone, cette page doit être hébergée sur une adresse HTTPS ; un fichier HTML ouvert depuis Téléchargements ne suffit pas. Autorise ensuite la localisation dans Safari et utilise une connexion internet.</p>
+</section>
+</main>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const map=L.map('map').setView([44.79,-0.57],12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+let selected=5, gps=null, routeLayer=null, startMarker=null, lastRoute=null;
+document.querySelectorAll('.distance').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.distance').forEach(x=>x.classList.remove('active'));b.classList.add('active');selected=+b.dataset.km}));
+const statusEl=document.getElementById('status'), findBtn=document.getElementById('find');
+function status(t){statusEl.textContent=t}
+function dest(lat,lon,meters,bearing){const R=6371000,a=bearing*Math.PI/180,p1=lat*Math.PI/180,l1=lon*Math.PI/180,d=meters/R;const p2=Math.asin(Math.sin(p1)*Math.cos(d)+Math.cos(p1)*Math.sin(d)*Math.cos(a));const l2=l1+Math.atan2(Math.sin(a)*Math.sin(d)*Math.cos(p1),Math.cos(d)-Math.sin(p1)*Math.sin(p2));return [l2*180/Math.PI,p2*180/Math.PI]}
+async function osrm(points){const coords=points.map(p=>p[0]+','+p[1]).join(';');const u='https://routing.openstreetmap.de/routed-foot/route/v1/driving/'+coords+'?overview=full&geometries=geojson&steps=false';const r=await fetch(u);if(!r.ok)throw Error('Service de calcul indisponible');const j=await r.json();if(j.code!=='Ok'||!j.routes?.length)throw Error('Aucun itinéraire trouvé');return j.routes[0]}
+async function generate(){
+ if(!window.isSecureContext){status('Le GPS est bloqué car cette page est ouverte comme fichier local. Il faut ouvrir RunLoop depuis une adresse HTTPS (site web sécurisé), puis autoriser la localisation dans Safari.');findBtn.disabled=false;return;}
+ if(!navigator.geolocation){status('La géolocalisation n’est pas disponible dans ce navigateur. Essaie avec Safari sur iPhone.');findBtn.disabled=false;return;}
+ if(!gps){status('Recherche de ta position GPS…');navigator.geolocation.getCurrentPosition(async pos=>{gps=[pos.coords.longitude,pos.coords.latitude];map.setView([gps[1],gps[0]],14);if(startMarker)map.removeLayer(startMarker);startMarker=L.marker([gps[1],gps[0]]).addTo(map).bindPopup('Ton point de départ');await calculate()},e=>{status(e.code===1?'Autorisation refusée : dans Safari, autorise la localisation pour ce site dans les réglages du site.':e.code===2?'Position introuvable. Active les services de localisation de l’iPhone et réessaie.':'Le GPS met trop de temps à répondre. Réessaie dehors, avec une bonne visibilité du ciel.');findBtn.disabled=false},{enableHighAccuracy:true,timeout:15000,maximumAge:30000});return}
+ await calculate();
+}
+async function calculate(){
+ findBtn.disabled=true;document.getElementById('again').disabled=true;status('Recherche de boucles proches… Cela peut prendre quelques secondes.');
+ const target=selected*1000;let candidates=[];
+ // Try multiple bearings and radii; two intermediate points encourage a genuine loop.
+ for(let i=0;i<8;i++){
+  const bearing=i*45, radius=target/3.4;
+  const p1=dest(gps[1],gps[0],radius,bearing),p2=dest(gps[1],gps[0],radius,(bearing+150)%360);
+  try{const r=await osrm([gps,p1,p2,gps]);candidates.push(r)}catch(e){}
+ }
+ if(!candidates.length){status('Impossible de calculer un parcours ici pour le moment. Réessaie dans un instant ou change de lieu.');findBtn.disabled=false;return}
+ candidates.sort((a,b)=>Math.abs(a.distance-target)-Math.abs(b.distance-target));
+ let best=candidates[0];
+ // Refine route length by expanding or shrinking waypoint radius, keeping the best result.
+ for(let n=0;n<5;n++){
+  const ratio=Math.max(.65,Math.min(1.45,target/best.distance));
+  const radius=target/3.4*ratio;
+  const bearing=(n*67+23)%360,p1=dest(gps[1],gps[0],radius,bearing),p2=dest(gps[1],gps[0],radius,(bearing+150)%360);
+  try{const r=await osrm([gps,p1,p2,gps]);if(Math.abs(r.distance-target)<Math.abs(best.distance-target))best=r;}catch(e){}
+ }
+ lastRoute=best;
+ if(routeLayer)map.removeLayer(routeLayer);
+ routeLayer=L.geoJSON(best.geometry,{style:{color:'#1d6b45',weight:5,opacity:.9}}).addTo(map);
+ map.fitBounds(routeLayer.getBounds(),{padding:[25,25]});
+ const km=best.distance/1000;document.getElementById('distance').textContent=km.toFixed(2)+' km';
+ document.getElementById('time').textContent=Math.round(km*6)+' min';document.getElementById('gain').textContent='—';
+ document.getElementById('nav').disabled=false;document.getElementById('again').disabled=false;
+ status('Boucle calculée. Distance cible : '+selected+' km. Distance du tracé : '+km.toFixed(2)+' km. Tu peux demander une autre proposition.');
+ findBtn.disabled=false;
+}
+findBtn.addEventListener('click',generate);document.getElementById('again').addEventListener('click',calculate);
+document.getElementById('nav').addEventListener('click',()=>{if(!lastRoute)return;const c=lastRoute.geometry.coordinates;const destp=c[c.length-1];window.open('https://www.google.com/maps/dir/?api=1&origin='+gps[1]+','+gps[0]+'&destination='+destp[1]+','+destp[0]+'&travelmode=walking','_blank')});
+</script></body></html>
